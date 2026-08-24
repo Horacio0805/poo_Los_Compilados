@@ -1,7 +1,5 @@
-# ==============================================================================
 # .gitignore para la EE: Temas Selectos de IIE II (POO) - Universidad Veracruzana
 # Diseñado para proyectos de C++, Python y Diseño de Hardware (KiCad, Proteus, etc.)
-# ==============================================================================
 
 # --- Archivos del Sistema Operativo ---
 Thumbs.db
