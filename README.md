@@ -5,7 +5,7 @@
 * **Luis Horacio Romero Hernández**
 * **Santiago Maximiliano Vázquez Espinosa**
 * **Rafael Alejandro Hurtado Vasconcelos**
-* **Juan Giovanni Landa Cervantes**
+* **Juan Giovani Landa Cervantes**
 
 ## Materia
 
