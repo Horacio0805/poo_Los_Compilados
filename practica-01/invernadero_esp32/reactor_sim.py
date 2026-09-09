@@ -1,33 +1,3 @@
-"""
-reactor_sim.py — Simulador interactivo de reactor químico (HMI de consola)
-Practica 01 - Sistemas de Control (Python) - Version 1.0.0
-
-Modela el comportamiento térmico y barométrico de un reactor químico
-mediante una consola minimalista (sin gráficas), con tres modos de
-operación y un interlock de seguridad de máxima prioridad.
-
-Hardware simulado:
-    Sensor  Temperatura        0 - 150.0 °C   (muestreo analógico)
-    Sensor  Presión            0 - 15.0 Bar   (muestreo analógico)
-    Actuador Bomba Enfriamiento 0 - 100 %     (modulación proporcional)
-    Actuador Válvula de Alivio  0/1           (control ON/OFF)
-
-Modos:
-    Manual      -> el operario define directamente bomba y válvula.
-    Automático  -> ΔT = (+1.5°C) - (0.05°C x %Bomba), ciclo a ciclo.
-    Pruebas     -> permite forzar lecturas de sensores para validar
-                   los interlocks y límites operativos.
-
-Interlock de seguridad (máxima prioridad, se evalúa SIEMPRE):
-    Si Temperatura > 85.0 °C  o  Presión > 12.0 Bar:
-        -> se ignora cualquier instrucción del operario
-        -> Bomba de Enfriamiento forzada a 100 %
-        -> Válvula de Alivio forzada a ABIERTA (1)
-
-Ejecutar:
-    python reactor_sim.py
-"""
-
 import os
 
 
