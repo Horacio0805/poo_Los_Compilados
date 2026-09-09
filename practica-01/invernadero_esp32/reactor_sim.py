@@ -1,189 +1,243 @@
 """
-reactor_sim.py — Simulador interactivo de control PID de temperatura
+reactor_sim.py — Simulador interactivo de reactor químico (HMI de consola)
 Practica 01 - Sistemas de Control (Python) - Version 1.0.0
 
-Modelo: reactor químico simplificado de 1er orden con retardo térmico,
-controlado en lazo cerrado por un PID discreto. El calentador se modela
-como una fuente de calor proporcional a la salida del controlador (0-100%),
-y hay pérdidas de calor proporcionales a la diferencia con la temperatura
-ambiente.
+Modela el comportamiento térmico y barométrico de un reactor químico
+mediante una consola minimalista (sin gráficas), con tres modos de
+operación y un interlock de seguridad de máxima prioridad.
+
+Hardware simulado:
+    Sensor  Temperatura        0 - 150.0 °C   (muestreo analógico)
+    Sensor  Presión            0 - 15.0 Bar   (muestreo analógico)
+    Actuador Bomba Enfriamiento 0 - 100 %     (modulación proporcional)
+    Actuador Válvula de Alivio  0/1           (control ON/OFF)
+
+Modos:
+    Manual      -> el operario define directamente bomba y válvula.
+    Automático  -> ΔT = (+1.5°C) - (0.05°C x %Bomba), ciclo a ciclo.
+    Pruebas     -> permite forzar lecturas de sensores para validar
+                   los interlocks y límites operativos.
+
+Interlock de seguridad (máxima prioridad, se evalúa SIEMPRE):
+    Si Temperatura > 85.0 °C  o  Presión > 12.0 Bar:
+        -> se ignora cualquier instrucción del operario
+        -> Bomba de Enfriamiento forzada a 100 %
+        -> Válvula de Alivio forzada a ABIERTA (1)
 
 Ejecutar:
     python reactor_sim.py
-
-Requiere:
-    numpy
-    matplotlib
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, TextBox
+import os
 
 
 # ---------------------------------------------------------------------------
-# Modelo de planta: reactor térmico de 1er orden
+# Límites y constantes de operación
 # ---------------------------------------------------------------------------
-class ReactorTermico:
-    """
-    dT/dt = (Q_heater - Q_loss) / C
+TEMP_MIN, TEMP_MAX = 0.0, 150.0
+PRES_MIN, PRES_MAX = 0.0, 15.0
 
-    Q_heater = (salida_pid / 100) * potencia_max      [W]
-    Q_loss   = k_perdida * (T - T_ambiente)            [W]
-    C        = capacidad_termica_efectiva              [J/°C]
-    """
+TEMP_INTERLOCK = 85.0      # °C
+PRES_INTERLOCK = 12.0      # Bar
 
-    def __init__(self, T0=25.0, T_ambiente=22.0, potencia_max=500.0,
-                 k_perdida=8.0, capacidad_termica=1200.0):
-        self.T = T0
-        self.T_ambiente = T_ambiente
-        self.potencia_max = potencia_max
-        self.k_perdida = k_perdida
-        self.C = capacidad_termica
+CAUDAL_MAX = 25.0          # L/min, caudal a bomba 100% (para "leer caudal")
 
-    def step(self, salida_pid_pct, dt):
-        salida_pid_pct = np.clip(salida_pid_pct, 0.0, 100.0)
-        q_in = (salida_pid_pct / 100.0) * self.potencia_max
-        q_loss = self.k_perdida * (self.T - self.T_ambiente)
-        dT = (q_in - q_loss) / self.C * dt
-        self.T += dT
-        return self.T
+MODO_MANUAL, MODO_AUTOMATICO, MODO_PRUEBAS = "MANUAL", "AUTOMATICO", "PRUEBAS"
 
 
 # ---------------------------------------------------------------------------
-# Controlador PID discreto con anti-windup por saturación (clamping)
+# Estado del reactor (planta simulada)
 # ---------------------------------------------------------------------------
-class PID:
-    def __init__(self, kp, ki, kd, salida_min=0.0, salida_max=100.0):
-        self.kp, self.ki, self.kd = kp, ki, kd
-        self.salida_min = salida_min
-        self.salida_max = salida_max
-        self.integral = 0.0
-        self.error_previo = 0.0
-        self.primer_paso = True
+class Reactor:
+    def __init__(self):
+        self.temperatura = 25.0        # °C
+        self.presion = 1.0             # Bar
+        self.bomba_pct = 0.0           # % (0-100)
+        self.valvula_abierta = False   # False = 0, True = 1
+        self.modo = MODO_MANUAL
+        self.alarma_activa = False
+        self.ultimo_mensaje = ""
 
-    def reset(self):
-        self.integral = 0.0
-        self.error_previo = 0.0
-        self.primer_paso = True
+    # -- Actuadores ---------------------------------------------------------
+    def set_bomba(self, valor):
+        self.bomba_pct = max(0.0, min(100.0, valor))
 
-    def compute(self, setpoint, medicion, dt):
-        error = setpoint - medicion
-        salida_p = self.kp * error
+    def set_valvula(self, abierta: bool):
+        self.valvula_abierta = abierta
 
-        integral_tentativa = self.integral + error * dt
-        salida_i_tentativa = self.ki * integral_tentativa
+    # -- Lógica de modo automático -------------------------------------------
+    def paso_automatico(self):
+        """ΔT = (+1.5°C) - (0.05°C x %Bomba) por cada ciclo de control."""
+        delta_t = 1.5 - 0.05 * self.bomba_pct
+        self.temperatura += delta_t
+        self.temperatura = max(TEMP_MIN, min(TEMP_MAX, self.temperatura))
+        # La presión reacciona de forma acoplada a la temperatura
+        # (relación simplificada para efectos de simulación).
+        self.presion = max(PRES_MIN, min(PRES_MAX, 1.0 + 0.09 * (self.temperatura - 25.0)))
 
-        derivada = 0.0 if self.primer_paso else (error - self.error_previo) / dt
-        salida_d = self.kd * derivada
+    # -- Interlock de seguridad (prioridad máxima, se evalúa siempre) -------
+    def verificar_interlock(self):
+        if self.temperatura > TEMP_INTERLOCK or self.presion > PRES_INTERLOCK:
+            self.set_bomba(100.0)
+            self.set_valvula(True)
+            self.alarma_activa = True
+            return True
+        self.alarma_activa = False
+        return False
 
-        salida_sin_saturar = salida_p + salida_i_tentativa + salida_d
-        salida = np.clip(salida_sin_saturar, self.salida_min, self.salida_max)
+    # -- Lecturas de instrumentos --------------------------------------------
+    def leer_caudal(self):
+        """Caudal de la bomba de enfriamiento, proporcional al % de operación."""
+        return (self.bomba_pct / 100.0) * CAUDAL_MAX
 
-        # Anti-windup: solo integra si no está saturado, o si integrar
-        # ayuda a salir de la saturación.
-        if salida == salida_sin_saturar or (salida_sin_saturar > salida) == (error < 0):
-            self.integral = integral_tentativa
+    def leer_manometro(self):
+        return self.presion
 
-        self.error_previo = error
-        self.primer_paso = False
-        return salida
+
+reactor = Reactor()
 
 
 # ---------------------------------------------------------------------------
-# Simulación interactiva
+# HMI de consola
 # ---------------------------------------------------------------------------
-DT = 0.5          # paso de simulación [s]
-DURACION = 600    # ventana visible [s]
-N_PUNTOS = int(DURACION / DT)
-
-setpoint = 60.0
-kp, ki, kd = 8.0, 0.35, 4.0
-
-planta = ReactorTermico()
-pid = PID(kp, ki, kd)
-
-t_buffer = np.zeros(N_PUNTOS)
-T_buffer = np.full(N_PUNTOS, planta.T)
-sp_buffer = np.full(N_PUNTOS, setpoint)
-out_buffer = np.zeros(N_PUNTOS)
-
-fig, (ax_temp, ax_out) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
-plt.subplots_adjust(left=0.1, bottom=0.32, right=0.95, top=0.93, hspace=0.15)
-
-line_T, = ax_temp.plot(t_buffer, T_buffer, color="tab:red", label="Temperatura (°C)")
-line_SP, = ax_temp.plot(t_buffer, sp_buffer, color="tab:blue", linestyle="--", label="Setpoint")
-ax_temp.set_ylabel("Temperatura [°C]")
-ax_temp.set_ylim(15, 100)
-ax_temp.legend(loc="upper right")
-ax_temp.set_title("Simulador de Control PID — Reactor Térmico (v1.0.0)")
-ax_temp.grid(True, alpha=0.3)
-
-line_out, = ax_out.plot(t_buffer, out_buffer, color="tab:green", label="Salida PID (%)")
-ax_out.set_ylabel("Potencia calentador [%]")
-ax_out.set_xlabel("Tiempo [s]")
-ax_out.set_ylim(-5, 105)
-ax_out.grid(True, alpha=0.3)
-ax_out.legend(loc="upper right")
-
-# --- Controles interactivos ---
-ax_kp = plt.axes([0.15, 0.20, 0.7, 0.03])
-ax_ki = plt.axes([0.15, 0.15, 0.7, 0.03])
-ax_kd = plt.axes([0.15, 0.10, 0.7, 0.03])
-ax_sp = plt.axes([0.15, 0.03, 0.25, 0.05])
-
-s_kp = Slider(ax_kp, "Kp", 0.0, 30.0, valinit=kp)
-s_ki = Slider(ax_ki, "Ki", 0.0, 2.0, valinit=ki)
-s_kd = Slider(ax_kd, "Kd", 0.0, 15.0, valinit=kd)
-tb_sp = TextBox(ax_sp, "Setpoint °C  ", initial=str(setpoint))
+def limpiar_pantalla():
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def on_gains_change(_):
-    pid.kp = s_kp.val
-    pid.ki = s_ki.val
-    pid.kd = s_kd.val
+def dibujar_panel():
+    limpiar_pantalla()
+    print("=" * 58)
+    print("   SIMULADOR DE REACTOR QUIMICO - Panel HMI (v1.0.0)")
+    print("=" * 58)
+    print(f" Modo actual        : {reactor.modo}")
+    estado_alarma = "*** ALARMA - INTERLOCK ACTIVO ***" if reactor.alarma_activa else "Normal"
+    print(f" Estado de seguridad: {estado_alarma}")
+    print("-" * 58)
+    print(f" Temperatura        : {reactor.temperatura:6.2f} °C   (limite {TEMP_INTERLOCK} °C)")
+    print(f" Presion            : {reactor.presion:6.2f} Bar  (limite {PRES_INTERLOCK} Bar)")
+    print(f" Bomba de Enfriam.  : {reactor.bomba_pct:6.2f} %")
+    print(f" Valvula de Alivio  : {'ABIERTA' if reactor.valvula_abierta else 'CERRADA'}")
+    print("-" * 58)
+    if reactor.ultimo_mensaje:
+        print(f" > {reactor.ultimo_mensaje}")
+        print("-" * 58)
+    print(" Comandos: leer caudal | leer manometro | estado")
+    if reactor.modo == MODO_MANUAL:
+        print("           bomba <0-100> | valvula on/off")
+    elif reactor.modo == MODO_PRUEBAS:
+        print("           forzar temperatura <valor> | forzar presion <valor>")
+    print("           modo manual | modo automatico | modo pruebas | salir")
+    print("=" * 58)
 
 
-def on_setpoint_change(texto):
-    global setpoint
-    try:
-        setpoint = float(texto)
-    except ValueError:
-        pass
+def procesar_comando(entrada):
+    partes = entrada.strip().lower().split()
+    if not partes:
+        reactor.ultimo_mensaje = ""
+        return True
+
+    cmd = partes[0]
+
+    # -- Comandos disponibles en cualquier modo --------------------------
+    if cmd == "leer" and len(partes) >= 2 and partes[1] == "caudal":
+        reactor.ultimo_mensaje = f"Caudal de bomba: {reactor.leer_caudal():.2f} L/min"
+        return True
+
+    if cmd == "leer" and len(partes) >= 2 and partes[1] == "manometro":
+        reactor.ultimo_mensaje = f"Manometro (presion): {reactor.leer_manometro():.2f} Bar"
+        return True
+
+    if cmd == "estado":
+        reactor.ultimo_mensaje = "Panel actualizado."
+        return True
+
+    if cmd == "modo" and len(partes) >= 2:
+        if partes[1] == "manual":
+            reactor.modo = MODO_MANUAL
+            reactor.ultimo_mensaje = "Modo cambiado a MANUAL."
+        elif partes[1] in ("automatico", "automático"):
+            reactor.modo = MODO_AUTOMATICO
+            reactor.ultimo_mensaje = "Modo cambiado a AUTOMATICO."
+        elif partes[1] == "pruebas":
+            reactor.modo = MODO_PRUEBAS
+            reactor.ultimo_mensaje = "Modo cambiado a PRUEBAS."
+        else:
+            reactor.ultimo_mensaje = "Modo no reconocido."
+        return True
+
+    if cmd == "salir":
+        return False
+
+    # -- Comandos exclusivos de Modo Manual ------------------------------
+    if reactor.modo == MODO_MANUAL:
+        if cmd == "bomba" and len(partes) >= 2:
+            if reactor.alarma_activa:
+                reactor.ultimo_mensaje = "Instruccion ignorada: interlock de seguridad activo."
+                return True
+            try:
+                reactor.set_bomba(float(partes[1]))
+                reactor.ultimo_mensaje = f"Bomba ajustada a {reactor.bomba_pct:.2f} %."
+            except ValueError:
+                reactor.ultimo_mensaje = "Valor invalido para bomba."
+            return True
+
+        if cmd == "valvula" and len(partes) >= 2:
+            if reactor.alarma_activa:
+                reactor.ultimo_mensaje = "Instruccion ignorada: interlock de seguridad activo."
+                return True
+            if partes[1] == "on":
+                reactor.set_valvula(True)
+                reactor.ultimo_mensaje = "Valvula ABIERTA."
+            elif partes[1] == "off":
+                reactor.set_valvula(False)
+                reactor.ultimo_mensaje = "Valvula CERRADA."
+            else:
+                reactor.ultimo_mensaje = "Use: valvula on|off"
+            return True
+
+    # -- Comandos exclusivos de Modo Pruebas (inyeccion de fallos) -------
+    if reactor.modo == MODO_PRUEBAS:
+        if cmd == "forzar" and len(partes) >= 3 and partes[1] == "temperatura":
+            try:
+                reactor.temperatura = max(TEMP_MIN, min(TEMP_MAX, float(partes[2])))
+                reactor.ultimo_mensaje = f"Falla inyectada: temperatura forzada a {reactor.temperatura:.2f} °C."
+            except ValueError:
+                reactor.ultimo_mensaje = "Valor invalido."
+            return True
+
+        if cmd == "forzar" and len(partes) >= 3 and partes[1] == "presion":
+            try:
+                reactor.presion = max(PRES_MIN, min(PRES_MAX, float(partes[2])))
+                reactor.ultimo_mensaje = f"Falla inyectada: presion forzada a {reactor.presion:.2f} Bar."
+            except ValueError:
+                reactor.ultimo_mensaje = "Valor invalido."
+            return True
+
+    reactor.ultimo_mensaje = "Comando no reconocido para el modo actual."
+    return True
 
 
-s_kp.on_changed(on_gains_change)
-s_ki.on_changed(on_gains_change)
-s_kd.on_changed(on_gains_change)
-tb_sp.on_submit(on_setpoint_change)
+def main():
+    continuar = True
+    while continuar:
+        # El interlock se evalua en CADA ciclo, sin importar el modo,
+        # y tiene prioridad sobre cualquier instruccion del operario.
+        reactor.verificar_interlock()
 
-t_actual = 0.0
+        if reactor.modo == MODO_AUTOMATICO and not reactor.alarma_activa:
+            reactor.paso_automatico()
+            reactor.verificar_interlock()
 
+        dibujar_panel()
+        try:
+            entrada = input("Comando> ")
+        except (EOFError, KeyboardInterrupt):
+            break
 
-def actualizar(frame):
-    global t_actual
-    salida = pid.compute(setpoint, planta.T, DT)
-    temperatura = planta.step(salida, DT)
-    t_actual += DT
+        continuar = procesar_comando(entrada)
 
-    T_buffer[:-1] = T_buffer[1:]
-    T_buffer[-1] = temperatura
-    sp_buffer[:-1] = sp_buffer[1:]
-    sp_buffer[-1] = setpoint
-    out_buffer[:-1] = out_buffer[1:]
-    out_buffer[-1] = salida
-    t_buffer[:-1] = t_buffer[1:]
-    t_buffer[-1] = t_actual
-
-    line_T.set_data(t_buffer, T_buffer)
-    line_SP.set_data(t_buffer, sp_buffer)
-    line_out.set_data(t_buffer, out_buffer)
-    ax_temp.set_xlim(t_buffer[0], t_buffer[-1] if t_buffer[-1] > 0 else DURACION)
-    ax_out.set_xlim(t_buffer[0], t_buffer[-1] if t_buffer[-1] > 0 else DURACION)
-    return line_T, line_SP, line_out
+    print("\nSimulador finalizado.")
 
 
 if __name__ == "__main__":
-    import matplotlib.animation as animation
-    ani = animation.FuncAnimation(fig, actualizar, interval=int(DT * 1000), blit=False)
-    plt.show()
+    main()
