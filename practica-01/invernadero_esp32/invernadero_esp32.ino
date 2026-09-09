@@ -1,132 +1,197 @@
 /*
   invernadero_esp32.ino
-  Practica 01 - Sistemas de Control (ESP32) - Version 2.0.0
+  Practica 01 - Sistemas de Control (ESP32 / C++) - Version 2.0.0
+  Micro-Invernadero Inteligente
 
-  Control PID de temperatura para invernadero:
-    - Sensor: DS18B20 (OneWire, digital, resistente a humedad)
-    - Actuador: elemento calefactor conmutado por MOSFET/SSR vía PWM (ledc)
-    - Controlador: PID discreto (librería PID_v1) portado del simulador
-      de Python (practica-01/src/reactor_sim.py)
+  Pines (asignacion estricta segun la guia):
+    GPIO 34  Sensor Termico (LM35/DHT)   ADC, 12 bits
+    GPIO 32  Sensor LDR                  ADC, luz ambiental
+    GPIO 18  Ventilador (Motor DC)       PWM (ledc), 5 kHz
+    GPIO 19  LED de Potencia             PWM (ledc)
 
-  Librerías requeridas (Arduino Library Manager):
-    - OneWire
-    - DallasTemperature
-    - PID (br3ttb / PID_v1)
+  Algoritmo de control:
+    - Gestion termica : ventilador a 100% PWM si temperatura > 30 C
+    - Gestion luminica : a menor LDR, mayor duty cycle del LED
+                         (control proporcional inverso)
 
-  Conexiones sugeridas:
-    - DS18B20 DATA  -> GPIO4  (con resistencia pull-up de 4.7k a 3V3)
-    - Gate MOSFET   -> GPIO25 (salida PWM al calentador)
-    - GND común entre ESP32, sensor y etapa de potencia
-
-  Comandos por Monitor Serial (115200 baud):
-    SP:<valor>   -> cambia el setpoint, ej. "SP:28.5"
-    KP:<valor>   -> cambia Kp en caliente
-    KI:<valor>   -> cambia Ki en caliente
-    KD:<valor>   -> cambia Kd en caliente
+  Comunicacion serial:
+    Acepta comandos de texto por el Monitor Serie y reporta
+    telemetria en formato JSON simple.
+    Comandos disponibles:
+      leer            -> imprime telemetria actual (JSON)
+      ventilador on   -> fuerza ventilador a 100% manualmente
+      ventilador off  -> libera el forzado manual del ventilador
+      led <0-255>     -> fuerza el LED a un duty cycle manual
+      led auto        -> vuelve el LED a control proporcional automatico
+      ayuda           -> lista de comandos
 */
 
-#include <OneWire.h>
-#include <DallasTemperature.h>
-#include <PID_v1.h>
+// ---------------------------------------------------------------------
+// Configuracion de pines
+// ---------------------------------------------------------------------
+const int PIN_SENSOR_TEMP = 34;   // ADC - LM35/DHT (termico)
+const int PIN_SENSOR_LDR  = 32;   // ADC - luz ambiental
+const int PIN_VENTILADOR  = 18;   // PWM - motor DC
+const int PIN_LED         = 19;   // PWM - LED de potencia
 
-// ---------------- Configuración de hardware ----------------
-constexpr uint8_t PIN_DS18B20   = 4;
-constexpr uint8_t PIN_HEATER    = 25;
-constexpr uint8_t PWM_CHANNEL   = 0;
-constexpr uint32_t PWM_FREQ_HZ  = 5000;
-constexpr uint8_t PWM_RES_BITS  = 8;   // 0-255
+// ---------------------------------------------------------------------
+// Configuracion PWM (ledc)
+// ---------------------------------------------------------------------
+const int CANAL_VENTILADOR = 0;
+const int CANAL_LED        = 1;
+const int PWM_FREQ_HZ      = 5000;   // 5 kHz, segun requisito tecnico
+const int PWM_RESOLUCION   = 8;      // 8 bits -> duty 0-255
 
-OneWire oneWire(PIN_DS18B20);
-DallasTemperature sensores(&oneWire);
+// ---------------------------------------------------------------------
+// Parametros del algoritmo de control
+// ---------------------------------------------------------------------
+const float TEMP_UMBRAL_C   = 30.0;   // Activa ventilador al 100% por encima de esto
+const int   ADC_RESOLUCION  = 4096;   // 12 bits -> 0-4095
+const float ADC_VREF        = 3.3;    // Voltaje de referencia del ADC
 
-// ---------------- Variables del PID ----------------
-double temperaturaActual = 25.0;
-double salidaPID         = 0.0;   // 0-255 (mapea a 0-100% de potencia)
-double setpoint           = 28.0; // °C, valor por defecto para invernadero
+// LM35: 10 mV/°C. Ajustar segun el sensor real que se use.
+const float LM35_MV_POR_C = 10.0;
 
-double Kp = 8.0, Ki = 0.35, Kd = 4.0;  // ganancias iniciales, ajustar en campo
-PID controladorPID(&temperaturaActual, &salidaPID, &setpoint, Kp, Ki, Kd, DIRECT);
+// ---------------------------------------------------------------------
+// Estado de control manual / automatico
+// ---------------------------------------------------------------------
+bool ventiladorForzadoManual = false;
+bool ledEnAutomatico = true;
+int  ledDutyManual = 0;
 
-// ---------------- Temporización ----------------
-constexpr unsigned long PERIODO_MUESTREO_MS = 500;
-unsigned long ultimoMuestreo = 0;
+// ---------------------------------------------------------------------
+// Lecturas actuales (para telemetria)
+// ---------------------------------------------------------------------
+float temperaturaC = 0.0;
+int   lecturaLDR   = 0;
+int   dutyVentilador = 0;
+int   dutyLED         = 0;
 
 void setup() {
   Serial.begin(115200);
   delay(200);
 
-  sensores.begin();
-  sensores.setResolution(12);
+  // Resolucion del ADC a 12 bits, como exige la guia
+  analogReadResolution(12);
+  pinMode(PIN_SENSOR_TEMP, INPUT);
+  pinMode(PIN_SENSOR_LDR, INPUT);
 
-  ledcSetup(PWM_CHANNEL, PWM_FREQ_HZ, PWM_RES_BITS);
-  ledcAttachPin(PIN_HEATER, PWM_CHANNEL);
-  ledcWrite(PWM_CHANNEL, 0);
+  // Configuracion obligatoria de PWM: ledcSetup + ledcAttachPin
+  ledcSetup(CANAL_VENTILADOR, PWM_FREQ_HZ, PWM_RESOLUCION);
+  ledcAttachPin(PIN_VENTILADOR, CANAL_VENTILADOR);
 
-  controladorPID.SetMode(AUTOMATIC);
-  controladorPID.SetOutputLimits(0, 255);
-  controladorPID.SetSampleTime(PERIODO_MUESTREO_MS);
+  ledcSetup(CANAL_LED, PWM_FREQ_HZ, PWM_RESOLUCION);
+  ledcAttachPin(PIN_LED, CANAL_LED);
 
-  Serial.println(F("=== Invernadero ESP32 - Control PID v2.0.0 ==="));
-  Serial.println(F("Comandos: SP:<valor>  KP:<valor>  KI:<valor>  KD:<valor>"));
+  ledcWrite(CANAL_VENTILADOR, 0);
+  ledcWrite(CANAL_LED, 0);
+
+  Serial.println("{\"status\":\"listo\",\"mensaje\":\"Invernadero ESP32 v2.0.0 inicializado\"}");
+  imprimirAyuda();
 }
 
+void loop() {
+  leerSensores();
+  aplicarControl();
+  procesarComandoSerial();
+  delay(200);   // periodo de muestreo/control
+}
+
+// ---------------------------------------------------------------------
+// Lectura de sensores
+// ---------------------------------------------------------------------
+void leerSensores() {
+  int lecturaCruda = analogRead(PIN_SENSOR_TEMP);
+  float voltajeMv = (lecturaCruda / (float)ADC_RESOLUCION) * ADC_VREF * 1000.0;
+  temperaturaC = voltajeMv / LM35_MV_POR_C;
+
+  lecturaLDR = analogRead(PIN_SENSOR_LDR);
+}
+
+// ---------------------------------------------------------------------
+// Logica de control (termico + luminico)
+// ---------------------------------------------------------------------
+void aplicarControl() {
+  // --- Gestion termica: ventilador ON/PWM 100% sobre el umbral ---
+  if (ventiladorForzadoManual) {
+    dutyVentilador = 255;
+  } else if (temperaturaC > TEMP_UMBRAL_C) {
+    dutyVentilador = 255;   // 100% duty cycle
+  } else {
+    dutyVentilador = 0;
+  }
+  ledcWrite(CANAL_VENTILADOR, dutyVentilador);
+
+  // --- Gestion luminica: LED proporcional inverso al LDR ---
+  if (ledEnAutomatico) {
+    // A menor lectura de LDR (mas oscuridad), mayor duty cycle del LED.
+    dutyLED = 255 - map(lecturaLDR, 0, ADC_RESOLUCION - 1, 0, 255);
+    dutyLED = constrain(dutyLED, 0, 255);
+  } else {
+    dutyLED = ledDutyManual;
+  }
+  ledcWrite(CANAL_LED, dutyLED);
+}
+
+// ---------------------------------------------------------------------
+// Comunicacion serial: comandos + telemetria JSON
+// ---------------------------------------------------------------------
 void procesarComandoSerial() {
   if (!Serial.available()) return;
 
   String linea = Serial.readStringUntil('\n');
   linea.trim();
-  if (linea.length() < 4) return;
+  linea.toLowerCase();
 
-  String prefijo = linea.substring(0, 3);
-  float valor = linea.substring(3).toFloat();
-
-  if (prefijo == "SP:") {
-    setpoint = valor;
-    Serial.print(F("Nuevo setpoint: "));
-    Serial.println(setpoint);
-  } else if (prefijo == "KP:") {
-    Kp = valor;
-    controladorPID.SetTunings(Kp, Ki, Kd);
-    Serial.print(F("Nuevo Kp: "));
-    Serial.println(Kp);
-  } else if (prefijo == "KI:") {
-    Ki = valor;
-    controladorPID.SetTunings(Kp, Ki, Kd);
-    Serial.print(F("Nuevo Ki: "));
-    Serial.println(Ki);
-  } else if (prefijo == "KD:") {
-    Kd = valor;
-    controladorPID.SetTunings(Kp, Ki, Kd);
-    Serial.print(F("Nuevo Kd: "));
-    Serial.println(Kd);
+  if (linea == "leer") {
+    imprimirTelemetria();
+  } else if (linea == "ventilador on") {
+    ventiladorForzadoManual = true;
+    Serial.println("{\"ok\":\"ventilador forzado a 100%\"}");
+  } else if (linea == "ventilador off") {
+    ventiladorForzadoManual = false;
+    Serial.println("{\"ok\":\"ventilador vuelve a control automatico\"}");
+  } else if (linea == "led auto") {
+    ledEnAutomatico = true;
+    Serial.println("{\"ok\":\"led vuelve a control automatico\"}");
+  } else if (linea.startsWith("led ")) {
+    int valor = linea.substring(4).toInt();
+    valor = constrain(valor, 0, 255);
+    ledDutyManual = valor;
+    ledEnAutomatico = false;
+    Serial.print("{\"ok\":\"led forzado a duty ");
+    Serial.print(valor);
+    Serial.println("\"}");
+  } else if (linea == "ayuda") {
+    imprimirAyuda();
+  } else if (linea.length() > 0) {
+    Serial.println("{\"error\":\"comando no reconocido, escriba 'ayuda'\"}");
   }
 }
 
-void loop() {
-  procesarComandoSerial();
+void imprimirTelemetria() {
+  Serial.print("{");
+  Serial.print("\"temperatura_c\":");
+  Serial.print(temperaturaC, 2);
+  Serial.print(",\"ldr_raw\":");
+  Serial.print(lecturaLDR);
+  Serial.print(",\"ventilador_duty\":");
+  Serial.print(dutyVentilador);
+  Serial.print(",\"led_duty\":");
+  Serial.print(dutyLED);
+  Serial.print(",\"ventilador_manual\":");
+  Serial.print(ventiladorForzadoManual ? "true" : "false");
+  Serial.print(",\"led_auto\":");
+  Serial.print(ledEnAutomatico ? "true" : "false");
+  Serial.println("}");
+}
 
-  unsigned long ahora = millis();
-  if (ahora - ultimoMuestreo >= PERIODO_MUESTREO_MS) {
-    ultimoMuestreo = ahora;
-
-    sensores.requestTemperatures();
-    float lectura = sensores.getTempCByIndex(0);
-
-    // DS18B20 devuelve -127 si hay error de lectura/cableado
-    if (lectura > -100.0) {
-      temperaturaActual = lectura;
-    }
-
-    controladorPID.Compute();
-    ledcWrite(PWM_CHANNEL, (uint32_t)salidaPID);
-
-    float porcentajePotencia = (salidaPID / 255.0) * 100.0;
-    Serial.print(F("T="));
-    Serial.print(temperaturaActual, 2);
-    Serial.print(F("C  SP="));
-    Serial.print(setpoint, 2);
-    Serial.print(F("C  Salida="));
-    Serial.print(porcentajePotencia, 1);
-    Serial.println(F("%"));
-  }
+void imprimirAyuda() {
+  Serial.println("Comandos disponibles:");
+  Serial.println("  leer            -> telemetria actual (JSON)");
+  Serial.println("  ventilador on   -> fuerza ventilador al 100%");
+  Serial.println("  ventilador off  -> libera el forzado manual");
+  Serial.println("  led <0-255>     -> fuerza duty cycle del LED");
+  Serial.println("  led auto        -> control proporcional automatico");
+  Serial.println("  ayuda           -> esta lista");
 }
