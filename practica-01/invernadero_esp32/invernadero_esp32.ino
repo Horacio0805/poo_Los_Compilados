@@ -1,19 +1,4 @@
-/*
- * Micro-Invernadero Inteligente
- * Practica 01 - Sistemas de Control
- * ESP32 / C++ - v2.1.0
- *
- * Control:
- *  - Temperatura > 30 °C -> Ventilador 100 %
- *  - Menor iluminación -> Mayor intensidad del LED
- *
- * Comunicación:
- *  - leer
- *  - ventilador on/off
- *  - led <0-255>
- *  - led auto
- *  - ayuda
- */
+
 
 // ===================== PINES =====================
 #define TEMP_PIN     34
