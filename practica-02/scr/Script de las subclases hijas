@@ -1,0 +1,37 @@
+
+from control_acceso import ControlAcceso
+
+
+# Primera subclase: acceso por PIN
+class AccesoPIN(ControlAcceso):
+    def __init__(self, usuario, pin):
+        super().__init__(usuario)
+        self.pin = pin
+
+    def verificar_acceso(self):
+        self.acceso_permitido = self.pin == "1234"
+        return self.acceso_permitido
+
+
+# Segunda subclase: acceso por tarjeta RFID
+class AccesoRFID(ControlAcceso):
+    def __init__(self, usuario, tarjeta):
+        super().__init__(usuario)
+        self.tarjeta = tarjeta
+
+    def verificar_acceso(self):
+        tarjetas_validas = ["RFID001", "RFID002", "RFID003"]
+        self.acceso_permitido = self.tarjeta in tarjetas_validas
+        return self.acceso_permitido
+
+
+# Tercera subclase: acceso por huella digital
+class AccesoHuella(ControlAcceso):
+    def __init__(self, usuario, huella):
+        super().__init__(usuario)
+        self.huella = huella
+
+    def verificar_acceso(self):
+        huellas_registradas = ["HUELLA01", "HUELLA02"]
+        self.acceso_permitido = self.huella in huellas_registradas
+        return self.acceso_permitido
