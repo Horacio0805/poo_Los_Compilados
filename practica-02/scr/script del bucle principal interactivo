@@ -1,0 +1,80 @@
+
+# ==============================================
+# SCRIPT PRINCIPAL - RED IoT INTERACTIVA
+# ==============================================
+
+def main():
+
+    # Crear los dispositivos de la red
+    sensor_temp = NodoSensor("S01", "192.168.1.10",
+                             "Laboratorio", 30)
+
+    actuador_ventilador = NodoActuador(
+        "A01", "192.168.1.11", "Laboratorio"
+    )
+
+    sensor_luz = NodoSensor("S02", "192.168.1.12",
+                            "Patio", 80)
+
+    # Lista mixta de dispositivos (polimorfismo)
+    red_iot = [sensor_temp, actuador_ventilador, sensor_luz]
+
+    while True:
+
+        print("\n========== MENU RED IoT ==========")
+        print("1. Conectar dispositivos")
+        print("2. Mostrar telemetria")
+        print("3. Encender ventilador")
+        print("4. Apagar ventilador")
+        print("5. Cambiar limite de alerta")
+        print("6. Salir")
+        print("==================================")
+
+        opcion = input("Selecciona una opcion: ")
+
+        if opcion == "1":
+            print("\nConectando dispositivos...")
+
+            for dispositivo in red_iot:
+                dispositivo.conectar()
+
+        elif opcion == "2":
+            print("\n--- TELEMETRIA DE LA RED ---")
+
+            # Bucle polimorfico
+            for dispositivo in red_iot:
+                dispositivo.enviar_telemetria()
+
+        elif opcion == "3":
+            potencia = input("Potencia PWM (0-255): ")
+
+            try:
+                actuador_ventilador.encender(int(potencia))
+            except ValueError:
+                print("Error: ingresa un numero valido.")
+
+        elif opcion == "4":
+            actuador_ventilador.apagar()
+
+        elif opcion == "5":
+            try:
+                limite = float(
+                    input("Nuevo limite de temperatura: ")
+                )
+
+                sensor_temp.set_limite_alerta(limite)
+
+            except ValueError:
+                print("Error: ingresa un valor numerico.")
+
+        elif opcion == "6":
+            print("\nFinalizando simulacion IoT...")
+            break
+
+        else:
+            print("Opcion no valida. Intenta de nuevo.")
+
+
+# Ejecutar el programa principal
+if __name__ == "__main__":
+    main()
