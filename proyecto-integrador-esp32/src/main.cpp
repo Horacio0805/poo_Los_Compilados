@@ -4,9 +4,8 @@
 #include <MFRC522.h>
 #include <ESP32Servo.h>
 
-// ============================================
 // CONFIGURACION DE PINES
-// ============================================
+
 #define RFID_SS     5
 #define RFID_RST    22
 #define PUERTA_PIN  27
@@ -18,9 +17,8 @@
 // Cambiar por el UID de tu tarjeta autorizada
 const String UID_AUTORIZADO = "A1 B2 C3 D4";
 
-// ============================================
 // 1. SUPERCLASE PADRE: NodoIoT
-// ============================================
+
 class NodoIoT {
 protected:
   String id_dispositivo;
@@ -45,9 +43,8 @@ public:
   virtual ~NodoIoT() {}
 };
 
-// ============================================
 // 2. SUBCLASE: NodoSensor
-// ============================================
+
 class NodoSensor : public NodoIoT {
 private:
   float limite_alerta;
@@ -75,9 +72,8 @@ public:
   }
 };
 
-// ============================================
 // 3. SUBCLASE: NodoActuador
-// ============================================
+
 class NodoActuador : public NodoIoT {
 private:
   bool estado_activo;
@@ -110,9 +106,8 @@ public:
   }
 };
 
-// ============================================
 // 4. SENSOR RFID
-// ============================================
+
 class SensorRFID : public NodoSensor {
 private:
   MFRC522 lector;
@@ -136,6 +131,7 @@ public:
 
     for (byte i = 0; i < lector.uid.size; i++) {
       if (i > 0) uid_detectado += " ";
+
       if (lector.uid.uidByte[i] < 0x10)
         uid_detectado += "0";
 
@@ -159,9 +155,8 @@ public:
   }
 };
 
-// ============================================
 // 5. SENSOR MAGNETICO DE PUERTA
-// ============================================
+
 class SensorPuerta : public NodoSensor {
 private:
   bool puerta_abierta;
@@ -187,9 +182,8 @@ public:
   }
 };
 
-// ============================================
 // 6. ACTUADOR: CERRADURA CON SERVOMOTOR
-// ============================================
+
 class ActuadorCerradura : public NodoActuador {
 private:
   Servo servo;
@@ -203,21 +197,27 @@ public:
   bool conectar() override {
     servo.setPeriodHertz(50);
     servo.attach(SERVO_PIN, 500, 2400);
+
     cerrar_cerradura();
+
     return NodoIoT::conectar();
   }
 
   void abrir_cerradura() {
     angulo_servo = 90;
     servo.write(angulo_servo);
+
     NodoActuador::activar();
+
     Serial.println("Cerradura desbloqueada");
   }
 
   void cerrar_cerradura() {
     angulo_servo = 0;
     servo.write(angulo_servo);
+
     NodoActuador::desactivar();
+
     Serial.println("Cerradura bloqueada");
   }
 
@@ -230,9 +230,8 @@ public:
   }
 };
 
-// ============================================
 // 7. ACTUADOR: ALARMA BUZZER
-// ============================================
+
 class ActuadorAlarma : public NodoActuador {
 private:
   int duracion_alarma;
@@ -245,6 +244,7 @@ public:
   bool conectar() override {
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
+
     return NodoIoT::conectar();
   }
 
@@ -265,24 +265,33 @@ public:
   }
 };
 
-// ============================================
 // CREACION DE OBJETOS
-// ============================================
+
 SensorRFID rfid;
 SensorPuerta sensorPuerta;
 ActuadorCerradura cerradura;
 ActuadorAlarma alarma;
 
+// VARIABLES DE CONTROL DE ACCESO
+
 bool accesoActivo = false;
 bool puertaFueAbierta = false;
+
 unsigned long inicioAcceso = 0;
 
+// Control de puerta abierta
+unsigned long inicioPuertaAbierta = 0;
+bool alertaPuertaEmitida = false;
+
+// TIEMPOS DEL SISTEMA
+
+// Tiempo para abrir la puerta despues de autorizar
 const unsigned long TIEMPO_ACCESO = 5000;
+
+// Tiempo maximo que puede permanecer abierta
 const unsigned long TIEMPO_MAX_ABIERTO = 15000;
 
-// ============================================
 // FUNCION SETUP
-// ============================================
 void setup() {
   Serial.begin(115200);
 
@@ -305,68 +314,125 @@ void setup() {
   Serial.println("==============================");
 }
 
-// ============================================
 // BUCLE PRINCIPAL
-// ============================================
 void loop() {
 
   String uid = rfid.leer_tarjeta();
 
-  // Revisar tarjeta presentada
+  // VERIFICACION DE TARJETA RFID
   if (uid != "") {
+
     Serial.println("Tarjeta detectada: " + uid);
 
     if (rfid.validar_uid(uid)) {
+
       Serial.println("ACCESO AUTORIZADO");
 
       if (!accesoActivo) {
+
         cerradura.abrir_cerradura();
+
         digitalWrite(LED_VERDE, HIGH);
         digitalWrite(LED_ROJO, LOW);
 
         accesoActivo = true;
         puertaFueAbierta = false;
+
+        // Reiniciar temporizadores y alerta
         inicioAcceso = millis();
+        inicioPuertaAbierta = 0;
+        alertaPuertaEmitida = false;
+
+        Serial.println("Puede abrir la puerta");
       }
 
     } else {
+
       Serial.println("ACCESO DENEGADO");
+
       digitalWrite(LED_ROJO, HIGH);
+
       alarma.emitir_alerta();
+
       digitalWrite(LED_ROJO, LOW);
     }
   }
 
-  // Supervisar apertura de puerta
+  // SUPERVISION DE PUERTA
   bool puertaAbierta = sensorPuerta.esta_abierta();
 
   if (accesoActivo) {
 
-    if (puertaAbierta) {
+    // DETECTAR PRIMERA APERTURA
+    if (puertaAbierta && !puertaFueAbierta) {
+
       puertaFueAbierta = true;
+
+      // Comenzar contador desde la apertura real
+      inicioPuertaAbierta = millis();
+
+      alertaPuertaEmitida = false;
+
+      Serial.println("Puerta abierta");
+      Serial.println("Iniciando supervision de 15 segundos");
     }
 
-    // Bloquear solamente si ya abrieron
-    // y despues cerraron la puerta
+    // CERRAR CUANDO LA PUERTA SE CIERRA
     if (puertaFueAbierta && !puertaAbierta) {
+
       cerradura.cerrar_cerradura();
+
       digitalWrite(LED_VERDE, LOW);
+
       accesoActivo = false;
+      puertaFueAbierta = false;
+
+      inicioPuertaAbierta = 0;
+      alertaPuertaEmitida = false;
+
+      Serial.println("Puerta cerrada correctamente");
+      Serial.println("Sistema listo para nueva tarjeta");
     }
 
-    // Tiempo de espera sin abrir la puerta
+    // TIEMPO DE ESPERA SIN ABRIR PUERTA
     else if (!puertaFueAbierta &&
              millis() - inicioAcceso >= TIEMPO_ACCESO) {
+
       cerradura.cerrar_cerradura();
+
       digitalWrite(LED_VERDE, LOW);
+
       accesoActivo = false;
+
+      inicioPuertaAbierta = 0;
+      alertaPuertaEmitida = false;
+
+      Serial.println("Tiempo de acceso agotado");
+      Serial.println("Cerradura bloqueada automaticamente");
     }
 
-    // Alerta si permanece abierta demasiado tiempo
+    // ALERTA POR PUERTA ABIERTA MUCHO TIEMPO
     else if (puertaAbierta &&
-             millis() - inicioAcceso >= TIEMPO_MAX_ABIERTO) {
-      Serial.println("ALERTA: Puerta abierta");
-      // Solo mensaje para evitar alarma continua
+             puertaFueAbierta &&
+             !alertaPuertaEmitida &&
+             millis() - inicioPuertaAbierta >= TIEMPO_MAX_ABIERTO) {
+
+      Serial.println("==============================");
+      Serial.println("ALERTA: PUERTA ABIERTA");
+      Serial.println("Tiempo maximo de 15 segundos superado");
+      Serial.println("==============================");
+
+      // Encender LED rojo
+      digitalWrite(LED_ROJO, HIGH);
+
+      // Activar buzzer
+      alarma.emitir_alerta();
+
+      // Apagar LED rojo
+      digitalWrite(LED_ROJO, LOW);
+
+      // Evitar que la alarma se repita
+      alertaPuertaEmitida = true;
     }
   }
 
