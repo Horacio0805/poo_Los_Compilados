@@ -1,51 +1,31 @@
+
 #include "ActuadorBase.h"
 
-ActuadorBase::ActuadorBase(String id, String lugar) {
-
-    id_dispositivo = id;
-    ubicacion = lugar;
-
-    estado_activo = false;
-    potencia_pwm = 0;
-
-}
-
-bool ActuadorBase::conectar() {
-
-    return true;
-
+ActuadorBase::ActuadorBase(String id, String lugar)
+    : NodoIoT(id, "Sin IP", lugar),
+      estado_activo(false),
+      potencia_pwm(0) {
 }
 
 void ActuadorBase::enviar_telemetria() {
 
     Serial.println("Actuador: " + id_dispositivo);
 
-    Serial.println("Ubicacion: " + ubicacion);
-
-    Serial.println("Estado: " +
-        String(estado_activo ? "Activo" : "Inactivo"));
-
+    Serial.println(
+        estado_activo ? "Estado: Activo" :
+                        "Estado: Inactivo"
+    );
 }
 
-String ActuadorBase::getId() {
-    return id_dispositivo;
-}
+bool ActuadorBase::getEstado() const {
 
-String ActuadorBase::getUbicacion() {
-    return ubicacion;
-}
-
-bool ActuadorBase::getEstado() {
     return estado_activo;
+
 }
 
-int ActuadorBase::getPotencia() {
+int ActuadorBase::getPotencia() const {
+
     return potencia_pwm;
-}
-
-void ActuadorBase::setUbicacion(String lugar) {
-
-    ubicacion = lugar;
 
 }
 
@@ -56,8 +36,6 @@ bool ActuadorBase::setPotencia(int valor) {
     }
 
     potencia_pwm = valor;
-
     return true;
 }
 
-ActuadorBase::~ActuadorBase() {}
