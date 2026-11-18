@@ -1,36 +1,28 @@
+
 #ifndef SENSOR_BASE_H
 #define SENSOR_BASE_H
 
 #include <Arduino.h>
+#include "../NodoIoT/NodoIoT.h"
 
-class SensorBase {
+class SensorBase : public NodoIoT {
 
-protected:
-
-    String id_dispositivo;
-    String ubicacion;
+private:
     float limite_alerta;
-    bool conectado;
 
 public:
-
     SensorBase(String id, String lugar);
-
-    virtual bool conectar();
 
     virtual String leer_sensor() = 0;
 
-    virtual void enviar_telemetria();
+    void enviar_telemetria() override;
 
-    String getId();
-    String getUbicacion();
-    float getLimiteAlerta();
-    bool getEstadoConexion();
+    float getLimiteAlerta() const;
 
-    void setUbicacion(String lugar);
     bool setLimiteAlerta(float valor);
 
-    virtual ~SensorBase();
+    virtual ~SensorBase() = default;
 };
 
 #endif
+
