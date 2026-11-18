@@ -1,51 +1,23 @@
+
 #include "SensorBase.h"
+#include <math.h>
 
-SensorBase::SensorBase(String id, String lugar) {
-
-    id_dispositivo = id;
-    ubicacion = lugar;
-    limite_alerta = 0;
-    conectado = false;
-
-}
-
-bool SensorBase::conectar() {
-
-    conectado = true;
-
-    return conectado;
+SensorBase::SensorBase(String id, String lugar)
+    : NodoIoT(id, "Sin IP", lugar),
+      limite_alerta(0) {
 }
 
 void SensorBase::enviar_telemetria() {
 
-    Serial.println("ID: " + id_dispositivo);
-
+    Serial.println("Sensor: " + id_dispositivo);
     Serial.println("Ubicacion: " + ubicacion);
-
-    Serial.println("Conexion: " +
-        String(conectado ? "Activa" : "Inactiva"));
+    Serial.println("Lectura: " + leer_sensor());
 
 }
 
-String SensorBase::getId() {
-    return id_dispositivo;
-}
+float SensorBase::getLimiteAlerta() const {
 
-String SensorBase::getUbicacion() {
-    return ubicacion;
-}
-
-float SensorBase::getLimiteAlerta() {
     return limite_alerta;
-}
-
-bool SensorBase::getEstadoConexion() {
-    return conectado;
-}
-
-void SensorBase::setUbicacion(String lugar) {
-
-    ubicacion = lugar;
 
 }
 
@@ -56,8 +28,5 @@ bool SensorBase::setLimiteAlerta(float valor) {
     }
 
     limite_alerta = valor;
-
     return true;
 }
-
-SensorBase::~SensorBase() {}
