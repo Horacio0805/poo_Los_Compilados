@@ -1,440 +1,217 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <MFRC522.h>
-#include <ESP32Servo.h>
+
+#include "../lib/SensorRFID/SensorRFID.h"
+#include "../lib/SensorPuerta/SensorPuerta.h"
+#include "../lib/ActuadorCerradura/ActuadorCerradura.h"
+#include "../lib/ActuadorAlarma/ActuadorAlarma.h"
 
 // CONFIGURACION DE PINES
 
-#define RFID_SS     5
-#define RFID_RST    22
-#define PUERTA_PIN  27
-#define SERVO_PIN   25
-#define BUZZER_PIN  26
-#define LED_VERDE   32
-#define LED_ROJO    33
+#define RFID_SS      5
+#define RFID_RST     22
+#define PUERTA_PIN   27
+#define SERVO_PIN    25
+#define BUZZER_PIN   26
+#define LED_VERDE    32
+#define LED_ROJO     33
 
-// Cambiar por el UID de tu tarjeta autorizada
+// Cambiar por el UID real de tu tarjeta
 const String UID_AUTORIZADO = "A1 B2 C3 D4";
-
-// 1. SUPERCLASE PADRE: NodoIoT
-
-class NodoIoT {
-protected:
-  String id_dispositivo;
-  String ip;
-  String ubicacion;
-  bool conectado;
-
-public:
-  NodoIoT(String id, String direccion, String lugar)
-    : id_dispositivo(id), ip(direccion),
-      ubicacion(lugar), conectado(false) {}
-
-  virtual bool conectar() {
-    conectado = true;
-    return conectado;
-  }
-
-  virtual void enviar_telemetria() {
-    Serial.println("Dispositivo: " + id_dispositivo);
-  }
-
-  virtual ~NodoIoT() {}
-};
-
-// 2. SUBCLASE: NodoSensor
-
-class NodoSensor : public NodoIoT {
-private:
-  float limite_alerta;
-
-public:
-  NodoSensor(String id, String lugar)
-    : NodoIoT(id, "Sin IP", lugar),
-      limite_alerta(0) {}
-
-  bool establecer_limite(float valor) {
-    if (!isfinite(valor) || valor < 0 || valor > 100) {
-      return false;
-    }
-    limite_alerta = valor;
-    return true;
-  }
-
-  virtual String leer_sensor() {
-    return "Sin lectura";
-  }
-
-  void enviar_telemetria() override {
-    Serial.println("Sensor: " + id_dispositivo);
-    Serial.println("Lectura: " + leer_sensor());
-  }
-};
-
-// 3. SUBCLASE: NodoActuador
-
-class NodoActuador : public NodoIoT {
-private:
-  bool estado_activo;
-  int potencia_pwm;
-
-public:
-  NodoActuador(String id, String lugar)
-    : NodoIoT(id, "Sin IP", lugar),
-      estado_activo(false), potencia_pwm(0) {}
-
-  virtual void activar() {
-    estado_activo = true;
-  }
-
-  virtual void desactivar() {
-    estado_activo = false;
-  }
-
-  bool establecer_potencia(int valor) {
-    if (valor < 0 || valor > 255) return false;
-    potencia_pwm = valor;
-    return true;
-  }
-
-  void enviar_telemetria() override {
-    Serial.print("Actuador: ");
-    Serial.println(id_dispositivo);
-    Serial.print("Estado: ");
-    Serial.println(estado_activo ? "Activo" : "Inactivo");
-  }
-};
-
-// 4. SENSOR RFID
-
-class SensorRFID : public NodoSensor {
-private:
-  MFRC522 lector;
-  String uid_detectado;
-
-public:
-  SensorRFID()
-    : NodoSensor("RFID01", "Entrada principal"),
-      lector(RFID_SS, RFID_RST) {}
-
-  bool conectar() override {
-    lector.PCD_Init();
-    return NodoIoT::conectar();
-  }
-
-  String leer_tarjeta() {
-    if (!lector.PICC_IsNewCardPresent()) return "";
-    if (!lector.PICC_ReadCardSerial()) return "";
-
-    uid_detectado = "";
-
-    for (byte i = 0; i < lector.uid.size; i++) {
-      if (i > 0) uid_detectado += " ";
-
-      if (lector.uid.uidByte[i] < 0x10)
-        uid_detectado += "0";
-
-      uid_detectado += String(lector.uid.uidByte[i], HEX);
-    }
-
-    uid_detectado.toUpperCase();
-
-    lector.PICC_HaltA();
-    lector.PCD_StopCrypto1();
-
-    return uid_detectado;
-  }
-
-  String leer_sensor() override {
-    return uid_detectado;
-  }
-
-  bool validar_uid(String uid) {
-    return uid == UID_AUTORIZADO;
-  }
-};
-
-// 5. SENSOR MAGNETICO DE PUERTA
-
-class SensorPuerta : public NodoSensor {
-private:
-  bool puerta_abierta;
-
-public:
-  SensorPuerta()
-    : NodoSensor("PUERTA01", "Marco de puerta"),
-      puerta_abierta(false) {}
-
-  bool conectar() override {
-    pinMode(PUERTA_PIN, INPUT_PULLUP);
-    return NodoIoT::conectar();
-  }
-
-  bool esta_abierta() {
-    // Contacto NC: cerrado = LOW
-    puerta_abierta = digitalRead(PUERTA_PIN) == HIGH;
-    return puerta_abierta;
-  }
-
-  String leer_sensor() override {
-    return esta_abierta() ? "Abierta" : "Cerrada";
-  }
-};
-
-// 6. ACTUADOR: CERRADURA CON SERVOMOTOR
-
-class ActuadorCerradura : public NodoActuador {
-private:
-  Servo servo;
-  int angulo_servo;
-
-public:
-  ActuadorCerradura()
-    : NodoActuador("SERVO01", "Cerradura"),
-      angulo_servo(0) {}
-
-  bool conectar() override {
-    servo.setPeriodHertz(50);
-    servo.attach(SERVO_PIN, 500, 2400);
-
-    cerrar_cerradura();
-
-    return NodoIoT::conectar();
-  }
-
-  void abrir_cerradura() {
-    angulo_servo = 90;
-    servo.write(angulo_servo);
-
-    NodoActuador::activar();
-
-    Serial.println("Cerradura desbloqueada");
-  }
-
-  void cerrar_cerradura() {
-    angulo_servo = 0;
-    servo.write(angulo_servo);
-
-    NodoActuador::desactivar();
-
-    Serial.println("Cerradura bloqueada");
-  }
-
-  void activar() override {
-    abrir_cerradura();
-  }
-
-  void desactivar() override {
-    cerrar_cerradura();
-  }
-};
-
-// 7. ACTUADOR: ALARMA BUZZER
-
-class ActuadorAlarma : public NodoActuador {
-private:
-  int duracion_alarma;
-
-public:
-  ActuadorAlarma()
-    : NodoActuador("ALARMA01", "Entrada"),
-      duracion_alarma(500) {}
-
-  bool conectar() override {
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
-
-    return NodoIoT::conectar();
-  }
-
-  void activar() override {
-    NodoActuador::activar();
-    digitalWrite(BUZZER_PIN, HIGH);
-  }
-
-  void desactivar() override {
-    digitalWrite(BUZZER_PIN, LOW);
-    NodoActuador::desactivar();
-  }
-
-  void emitir_alerta() {
-    activar();
-    delay(duracion_alarma);
-    desactivar();
-  }
-};
 
 // CREACION DE OBJETOS
 
-SensorRFID rfid;
-SensorPuerta sensorPuerta;
-ActuadorCerradura cerradura;
-ActuadorAlarma alarma;
+SensorRFID rfid(UID_AUTORIZADO);
+SensorPuerta sensorPuerta(PUERTA_PIN);
+ActuadorCerradura cerradura(SERVO_PIN);
+ActuadorAlarma alarma(BUZZER_PIN, 500);
 
-// VARIABLES DE CONTROL DE ACCESO
+// VARIABLES DE CONTROL
 
 bool accesoActivo = false;
 bool puertaFueAbierta = false;
-
-unsigned long inicioAcceso = 0;
-
-// Control de puerta abierta
-unsigned long inicioPuertaAbierta = 0;
 bool alertaPuertaEmitida = false;
 
-// TIEMPOS DEL SISTEMA
+unsigned long inicioAcceso = 0;
+unsigned long inicioPuertaAbierta = 0;
 
-// Tiempo para abrir la puerta despues de autorizar
 const unsigned long TIEMPO_ACCESO = 5000;
-
-// Tiempo maximo que puede permanecer abierta
 const unsigned long TIEMPO_MAX_ABIERTO = 15000;
 
-// FUNCION SETUP
-void setup() {
-  Serial.begin(115200);
+// FUNCIONES AUXILIARES
 
-  pinMode(LED_VERDE, OUTPUT);
-  pinMode(LED_ROJO, OUTPUT);
+void bloquearAcceso() {
 
-  digitalWrite(LED_VERDE, LOW);
-  digitalWrite(LED_ROJO, LOW);
+    cerradura.cerrar_cerradura();
 
-  SPI.begin(18, 19, 23, RFID_SS);
+    digitalWrite(LED_VERDE, LOW);
 
-  rfid.conectar();
-  sensorPuerta.conectar();
-  cerradura.conectar();
-  alarma.conectar();
+    accesoActivo = false;
+    puertaFueAbierta = false;
 
-  Serial.println("==============================");
-  Serial.println("CONTROL DE ACCESO CON RFID");
-  Serial.println("ESP32 - Sistema iniciado");
-  Serial.println("==============================");
+    Serial.println("ACCESO FINALIZADO");
+
 }
 
-// BUCLE PRINCIPAL
-void loop() {
+void autorizarAcceso() {
 
-  String uid = rfid.leer_tarjeta();
+    if (accesoActivo) {
+        Serial.println("Acceso ya activo");
+        return;
+    }
 
-  // VERIFICACION DE TARJETA RFID
-  if (uid != "") {
+    cerradura.abrir_cerradura();
+
+    digitalWrite(LED_VERDE, HIGH);
+    digitalWrite(LED_ROJO, LOW);
+
+    accesoActivo = true;
+    puertaFueAbierta = false;
+    alertaPuertaEmitida = false;
+
+    inicioAcceso = millis();
+
+    Serial.println("ACCESO AUTORIZADO");
+
+}
+
+void denegarAcceso() {
+
+    Serial.println("ACCESO DENEGADO");
+
+    digitalWrite(LED_ROJO, HIGH);
+
+    alarma.emitir_alerta();
+
+}
+
+void revisarTarjeta() {
+
+    String uid = rfid.leer_tarjeta();
+
+    if (uid == "") {
+        return;
+    }
 
     Serial.println("Tarjeta detectada: " + uid);
 
     if (rfid.validar_uid(uid)) {
 
-      Serial.println("ACCESO AUTORIZADO");
-
-      if (!accesoActivo) {
-
-        cerradura.abrir_cerradura();
-
-        digitalWrite(LED_VERDE, HIGH);
-        digitalWrite(LED_ROJO, LOW);
-
-        accesoActivo = true;
-        puertaFueAbierta = false;
-
-        // Reiniciar temporizadores y alerta
-        inicioAcceso = millis();
-        inicioPuertaAbierta = 0;
-        alertaPuertaEmitida = false;
-
-        Serial.println("Puede abrir la puerta");
-      }
+        autorizarAcceso();
 
     } else {
 
-      Serial.println("ACCESO DENEGADO");
+        denegarAcceso();
 
-      digitalWrite(LED_ROJO, HIGH);
-
-      alarma.emitir_alerta();
-
-      digitalWrite(LED_ROJO, LOW);
     }
-  }
 
-  // SUPERVISION DE PUERTA
-  bool puertaAbierta = sensorPuerta.esta_abierta();
+}
 
-  if (accesoActivo) {
+void supervisarPuerta() {
 
-    // DETECTAR PRIMERA APERTURA
+    bool puertaAbierta = sensorPuerta.esta_abierta();
+
+    if (!accesoActivo) {
+        return;
+    }
+
+    unsigned long ahora = millis();
+
     if (puertaAbierta && !puertaFueAbierta) {
 
-      puertaFueAbierta = true;
+        puertaFueAbierta = true;
+        inicioPuertaAbierta = ahora;
 
-      // Comenzar contador desde la apertura real
-      inicioPuertaAbierta = millis();
+        Serial.println("Puerta abierta");
 
-      alertaPuertaEmitida = false;
-
-      Serial.println("Puerta abierta");
-      Serial.println("Iniciando supervision de 15 segundos");
     }
 
-    // CERRAR CUANDO LA PUERTA SE CIERRA
+    // Bloquear al cerrar despues de abrir
     if (puertaFueAbierta && !puertaAbierta) {
 
-      cerradura.cerrar_cerradura();
+        bloquearAcceso();
+        return;
 
-      digitalWrite(LED_VERDE, LOW);
-
-      accesoActivo = false;
-      puertaFueAbierta = false;
-
-      inicioPuertaAbierta = 0;
-      alertaPuertaEmitida = false;
-
-      Serial.println("Puerta cerrada correctamente");
-      Serial.println("Sistema listo para nueva tarjeta");
     }
 
-    // TIEMPO DE ESPERA SIN ABRIR PUERTA
-    else if (!puertaFueAbierta &&
-             millis() - inicioAcceso >= TIEMPO_ACCESO) {
+    // Tiempo agotado sin abrir
+    if (!puertaFueAbierta &&
+        ahora - inicioAcceso >= TIEMPO_ACCESO) {
 
-      cerradura.cerrar_cerradura();
+        Serial.println("Tiempo de acceso agotado");
 
-      digitalWrite(LED_VERDE, LOW);
+        bloquearAcceso();
+        return;
 
-      accesoActivo = false;
-
-      inicioPuertaAbierta = 0;
-      alertaPuertaEmitida = false;
-
-      Serial.println("Tiempo de acceso agotado");
-      Serial.println("Cerradura bloqueada automaticamente");
     }
 
-    // ALERTA POR PUERTA ABIERTA MUCHO TIEMPO
-    else if (puertaAbierta &&
-             puertaFueAbierta &&
-             !alertaPuertaEmitida &&
-             millis() - inicioPuertaAbierta >= TIEMPO_MAX_ABIERTO) {
+    // Puerta abierta demasiado tiempo
+    if (puertaFueAbierta &&
+        puertaAbierta &&
+        !alertaPuertaEmitida &&
+        ahora - inicioPuertaAbierta >= TIEMPO_MAX_ABIERTO) {
 
-      Serial.println("==============================");
-      Serial.println("ALERTA: PUERTA ABIERTA");
-      Serial.println("Tiempo maximo de 15 segundos superado");
-      Serial.println("==============================");
+        Serial.println("ALERTA: Puerta abierta demasiado tiempo");
 
-      // Encender LED rojo
-      digitalWrite(LED_ROJO, HIGH);
+        alarma.emitir_alerta();
 
-      // Activar buzzer
-      alarma.emitir_alerta();
+        alertaPuertaEmitida = true;
 
-      // Apagar LED rojo
-      digitalWrite(LED_ROJO, LOW);
-
-      // Evitar que la alarma se repita
-      alertaPuertaEmitida = true;
     }
-  }
 
-  delay(100);
+}
+
+void actualizarIndicadores() {
+
+    // Mantener el LED rojo encendido
+    // mientras la alarma esta activa
+    digitalWrite(
+        LED_ROJO,
+        alarma.getEstadoAlarma() ? HIGH : LOW
+    );
+
+}
+
+// SETUP
+
+void setup() {
+
+    Serial.begin(115200);
+
+    pinMode(LED_VERDE, OUTPUT);
+    pinMode(LED_ROJO, OUTPUT);
+
+    digitalWrite(LED_VERDE, LOW);
+    digitalWrite(LED_ROJO, LOW);
+
+    SPI.begin(18, 19, 23, RFID_SS);
+
+    rfid.conectar();
+    sensorPuerta.conectar();
+    cerradura.conectar();
+    alarma.conectar();
+
+    Serial.println("==============================");
+    Serial.println("CONTROL DE ACCESO CON RFID");
+    Serial.println("ETAPA 2 - POO");
+    Serial.println("ESP32 - Sistema iniciado");
+    Serial.println("==============================");
+
+    Serial.println("Dispositivos inicializados");
+
+}
+
+// LOOP PRINCIPAL
+
+void loop() {
+
+    revisarTarjeta();
+
+    supervisarPuerta();
+
+    alarma.actualizar();
+
+    actualizarIndicadores();
+
 }
