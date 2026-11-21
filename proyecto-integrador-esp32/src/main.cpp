@@ -32,45 +32,47 @@ ActuadorCerradura cerradura(SERVO_PIN);
 ActuadorAlarma alarma(BUZZER_PIN, 500);
 
 // ============================================
-// VARIABLES DE ESTADO
-// ============================================
-
-bool accesoActivo = false;
-bool puertaFueAbierta = false;
-bool alertaPuertaEmitida = false;
-bool puertaAbiertaAnterior = false;
-
-// Retardo antes de cerrar la chapa
-bool cierrePendiente = false;
-unsigned long inicioEsperaCierre = 0;
-
-// Alarma de intrusion
-bool alarmaIntrusionActiva = false;
-unsigned long inicioAlarmaIntrusion = 0;
-
-// Dos pitidos RFID
-bool pitidosActivos = false;
-uint8_t fasePitido = 0;
-unsigned long tiempoPitido = 0;
-
-// Control de tiempos
-unsigned long inicioAcceso = 0;
-unsigned long inicioPuertaAbierta = 0;
-
-// ============================================
 // CONSTANTES DE TIEMPO
 // ============================================
 
 const unsigned long TIEMPO_ACCESO = 5000;
 const unsigned long TIEMPO_MAX_ABIERTO = 15000;
 const unsigned long DURACION_ALARMA_INTRUSION = 10000;
-
-// Esperar 1 segundo despues de cerrar puerta
 const unsigned long RETARDO_CIERRE = 1000;
 
-// Duracion de los pitidos
 const unsigned long DURACION_PITIDO = 120;
 const unsigned long PAUSA_PITIDO = 120;
+
+// Parpadeo del LED rojo durante intrusion
+const unsigned long INTERVALO_PARPADEO = 250;
+
+// ============================================
+// VARIABLES DE ESTADO
+// ============================================
+
+// Acceso y puerta
+bool accesoActivo = false;
+bool puertaFueAbierta = false;
+bool alertaPuertaEmitida = false;
+bool puertaAbiertaAnterior = false;
+
+// Retardo para bloquear chapa
+bool cierrePendiente = false;
+unsigned long inicioEsperaCierre = 0;
+
+// Intrusion
+bool alarmaIntrusionActiva = false;
+unsigned long inicioAlarmaIntrusion = 0;
+bool intrusionPendiente = false;
+
+// Dos pitidos RFID
+bool pitidosActivos = false;
+uint8_t fasePitido = 0;
+unsigned long tiempoPitido = 0;
+
+// Tiempos del acceso
+unsigned long inicioAcceso = 0;
+unsigned long inicioPuertaAbierta = 0;
 
 // ============================================
 // DOS PITIDOS DE AUTORIZACION
@@ -93,7 +95,7 @@ void iniciarPitidosAutorizacion() {
 
 void actualizarPitidos() {
 
-    if (!pitidosActivos) {
+    if (!pitidosActivos || alarmaIntrusionActiva) {
         return;
     }
 
@@ -103,7 +105,6 @@ void actualizarPitidos() {
 
         case 1:
             if (ahora - tiempoPitido >= DURACION_PITIDO) {
-
                 alarma.desactivar();
                 fasePitido = 2;
                 tiempoPitido = ahora;
@@ -112,7 +113,6 @@ void actualizarPitidos() {
 
         case 2:
             if (ahora - tiempoPitido >= PAUSA_PITIDO) {
-
                 alarma.activar();
                 fasePitido = 3;
                 tiempoPitido = ahora;
@@ -121,7 +121,6 @@ void actualizarPitidos() {
 
         case 3:
             if (ahora - tiempoPitido >= DURACION_PITIDO) {
-
                 alarma.desactivar();
                 fasePitido = 0;
                 pitidosActivos = false;
@@ -131,15 +130,12 @@ void actualizarPitidos() {
 }
 
 // ============================================
-// BLOQUEAR CERRADURA
+// CERRAR CERRADURA
 // ============================================
 
 void bloquearAcceso() {
 
-    // Regresar servo a 0 grados
     cerradura.cerrar_cerradura();
-
-    digitalWrite(LED_VERDE, LOW);
 
     accesoActivo = false;
     puertaFueAbierta = false;
@@ -158,12 +154,17 @@ void bloquearAcceso() {
 
 void autorizarAcceso() {
 
+    // Evitar desbloqueo durante una intrusion
+    if (alarmaIntrusionActiva) {
+        Serial.println("Alarma activa: acceso temporalmente bloqueado");
+        return;
+    }
+
     if (accesoActivo) {
         Serial.println("Acceso ya activo");
         return;
     }
 
-    // Abrir cerradura
     cerradura.abrir_cerradura();
 
     accesoActivo = true;
@@ -173,15 +174,12 @@ void autorizarAcceso() {
 
     inicioAcceso = millis();
 
-    digitalWrite(LED_VERDE, HIGH);
-
-    // Dos pitidos de confirmacion
     iniciarPitidosAutorizacion();
 
     Serial.println("==========================");
     Serial.println("ACCESO AUTORIZADO");
     Serial.println("Servo enviado a 90 grados");
-    Serial.println("Chapa desbloqueada");
+    Serial.println("LED VERDE ENCENDIDO");
     Serial.println("==========================");
 }
 
@@ -221,36 +219,37 @@ void revisarTarjeta() {
 }
 
 // ============================================
-// DETECCION DE INTRUSION
+// DETECTAR INTRUSION
 // ============================================
 
 void detectarIntrusion(bool puertaAbierta) {
 
     unsigned long ahora = millis();
 
-    // Detectar apertura sin tarjeta autorizada
+    // Detectar apertura no autorizada
     if (puertaAbierta &&
         !puertaAbiertaAnterior &&
-        !accesoActivo) {
+        !accesoActivo &&
+        !alarmaIntrusionActiva) {
 
-        // Cancelar pitidos
+        // Cancelar pitidos anteriores
         pitidosActivos = false;
         fasePitido = 0;
 
-        // Iniciar alarma de 10 segundos
         alarmaIntrusionActiva = true;
         inicioAlarmaIntrusion = ahora;
 
         alarma.activar();
 
         Serial.println("==========================");
-        Serial.println("ALERTA: PUERTA FORZADA");
-        Serial.println("Apertura sin autorizacion");
-        Serial.println("BUZZER ACTIVADO 10 SEG");
+        Serial.println("ALERTA DE SEGURIDAD");
+        Serial.println("PUERTA ABIERTA SIN RFID");
+        Serial.println("BUZZER ACTIVADO: 10 SEG");
+        Serial.println("LED ROJO PARPADEANDO");
         Serial.println("==========================");
     }
 
-    // Apagar alarma despues de 10 segundos
+    // Finalizar alarma despues de 10 segundos
     if (alarmaIntrusionActiva &&
         ahora - inicioAlarmaIntrusion >=
         DURACION_ALARMA_INTRUSION) {
@@ -275,16 +274,13 @@ void supervisarPuerta(bool puertaAbierta) {
 
     unsigned long ahora = millis();
 
-    // Detectar intrusiones
     detectarIntrusion(puertaAbierta);
 
-    // Si no hay acceso autorizado,
-    // no ejecutar el control normal de cerradura
     if (!accesoActivo) {
         return;
     }
 
-    // Detectar primera apertura autorizada
+    // Primera apertura autorizada
     if (puertaAbierta && !puertaFueAbierta) {
 
         puertaFueAbierta = true;
@@ -297,7 +293,7 @@ void supervisarPuerta(bool puertaAbierta) {
         Serial.println("==========================");
     }
 
-    // Detectar cierre de puerta
+    // Sensor detecta puerta cerrada
     if (puertaFueAbierta &&
         !puertaAbierta &&
         !cierrePendiente) {
@@ -306,60 +302,46 @@ void supervisarPuerta(bool puertaAbierta) {
         inicioEsperaCierre = ahora;
 
         Serial.println("==========================");
-        Serial.println("SENSOR MAGNETICO ACTIVADO");
         Serial.println("PUERTA CERRADA");
         Serial.println("Esperando 1 segundo");
         Serial.println("==========================");
     }
 
-    // Si la puerta se vuelve a abrir,
-    // cancelar el cierre pendiente
+    // Cancelar cierre si vuelve a abrir
     if (cierrePendiente && puertaAbierta) {
 
         cierrePendiente = false;
 
-        Serial.println("==========================");
-        Serial.println("PUERTA ABIERTA NUEVAMENTE");
-        Serial.println("Cierre de chapa cancelado");
-        Serial.println("==========================");
+        Serial.println("Puerta reabierta: cierre cancelado");
     }
 
-    // Esperar 1 segundo con puerta cerrada
-    // antes de regresar servo a 0 grados
+    // Regresar servo a 0 grados tras 1 segundo
     if (cierrePendiente &&
         !puertaAbierta &&
         ahora - inicioEsperaCierre >= RETARDO_CIERRE) {
 
-        Serial.println("==========================");
-        Serial.println("RETARDO FINALIZADO");
-        Serial.println("Regresando servo a 0 grados");
-        Serial.println("==========================");
-
         bloquearAcceso();
         return;
     }
 
-    // Si no abre dentro de 5 segundos
+    // Bloquear si no se abre dentro de 5 segundos
     if (!puertaFueAbierta &&
         ahora - inicioAcceso >= TIEMPO_ACCESO) {
 
         Serial.println("Tiempo de acceso agotado");
-        Serial.println("Bloqueando chapa");
 
         bloquearAcceso();
         return;
     }
 
-    // Alerta de puerta abierta mas de 15 segundos
+    // Puerta abierta por mas de 15 segundos
     if (puertaFueAbierta &&
         puertaAbierta &&
         !alertaPuertaEmitida &&
         ahora - inicioPuertaAbierta >=
         TIEMPO_MAX_ABIERTO) {
 
-        Serial.println("==========================");
         Serial.println("ALERTA: PUERTA ABIERTA MAS DE 15 SEG");
-        Serial.println("==========================");
 
         if (!alarmaIntrusionActiva && !pitidosActivos) {
             alarma.emitir_alerta();
@@ -370,28 +352,53 @@ void supervisarPuerta(bool puertaAbierta) {
 }
 
 // ============================================
-// ACTUALIZAR ALARMAS
+// ACTUALIZAR BUZZER
 // ============================================
 
 void actualizarAlarmas() {
 
-    // Evitar interrumpir los dos pitidos
-    // o la alarma de intrusion
+    // No interrumpir alarma de 10 s ni pitidos
     if (!alarmaIntrusionActiva && !pitidosActivos) {
         alarma.actualizar();
     }
 }
 
 // ============================================
-// ACTUALIZAR LEDS
+// ACTUALIZAR INDICADORES LED
 // ============================================
 
 void actualizarIndicadores() {
 
-    digitalWrite(
-        LED_ROJO,
-        alarma.getEstadoAlarma() ? HIGH : LOW
-    );
+    unsigned long ahora = millis();
+
+    // PRIORIDAD 1: Intrusion
+    if (alarmaIntrusionActiva) {
+
+        // LED rojo parpadea cada 250 ms
+        bool estadoRojo =
+            ((ahora / INTERVALO_PARPADEO) % 2) == 0;
+
+        digitalWrite(
+            LED_ROJO,
+            estadoRojo ? HIGH : LOW
+        );
+
+        digitalWrite(LED_VERDE, LOW);
+    }
+
+    // PRIORIDAD 2: Cerradura desbloqueada
+    else if (accesoActivo) {
+
+        digitalWrite(LED_ROJO, LOW);
+        digitalWrite(LED_VERDE, HIGH);
+    }
+
+    // PRIORIDAD 3: Cerradura bloqueada
+    else {
+
+        digitalWrite(LED_ROJO, HIGH);
+        digitalWrite(LED_VERDE, LOW);
+    }
 }
 
 // ============================================
@@ -402,22 +409,27 @@ void setup() {
 
     Serial.begin(115200);
 
+    // Inicializar LEDs
     pinMode(LED_VERDE, OUTPUT);
     pinMode(LED_ROJO, OUTPUT);
 
+    // Cerradura inicialmente bloqueada
     digitalWrite(LED_VERDE, LOW);
-    digitalWrite(LED_ROJO, LOW);
+    digitalWrite(LED_ROJO, HIGH);
 
-    // Iniciar SPI
+    // Inicializar SPI
     SPI.begin(18, 19, 23, RFID_SS);
 
-    // Inicializar dispositivos
+    // Inicializar componentes
     rfid.conectar();
     sensorPuerta.conectar();
 
     bool servoConectado = cerradura.conectar();
 
     alarma.conectar();
+
+    // Leer estado inicial del sensor
+    puertaAbiertaAnterior = sensorPuerta.esta_abierta();
 
     Serial.println("==========================");
     Serial.println("CONTROL DE ACCESO RFID");
@@ -426,15 +438,13 @@ void setup() {
     Serial.println("==========================");
 
     if (servoConectado) {
-        Serial.println("Servo inicializado");
+        Serial.println("Servo inicializado: GPIO 14");
     } else {
-        Serial.println("ERROR: Servo no inicializado");
+        Serial.println("ERROR AL INICIALIZAR SERVO");
     }
 
-    // Estado inicial del sensor magnetico
-    puertaAbiertaAnterior = sensorPuerta.esta_abierta();
-
-    Serial.println("Servo conectado a GPIO 14");
+    Serial.println("LED rojo: GPIO 33");
+    Serial.println("LED verde: GPIO 32");
     Serial.println("Retardo de cierre: 1 segundo");
     Serial.println("Alarma de intrusion: 10 segundos");
     Serial.println("Sistema listo");
@@ -447,18 +457,18 @@ void setup() {
 
 void loop() {
 
-    // Supervisar estado de la puerta
+    // Supervisar puerta primero
     bool puertaAbierta = sensorPuerta.esta_abierta();
 
     supervisarPuerta(puertaAbierta);
 
-    // Revisar tarjeta RFID
+    // Revisar tarjetas
     revisarTarjeta();
 
-    // Ejecutar dos pitidos
+    // Ejecutar pitidos
     actualizarPitidos();
 
-    // Actualizar alarmas
+    // Actualizar alarma
     actualizarAlarmas();
 
     // Actualizar LEDs
