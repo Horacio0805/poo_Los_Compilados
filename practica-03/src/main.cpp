@@ -14,7 +14,7 @@ NodoActuadorFisico actuador(
     "ACT_LED", PIN_LED, &sensor
 );
 
-// Arreglo polimorfico
+// Arreglo de polimorfismo para almacenar los nodos de la red
 NodoIoT* red[N] = {
     &sensor,
     &actuador
