@@ -4,7 +4,7 @@
 #include "NodoActuadorFisico.h"
 
 #define PIN_SENSOR 34
-#define PIN_LED 2
+#define PIN_LED 23
 
 const int N = 2;
 
